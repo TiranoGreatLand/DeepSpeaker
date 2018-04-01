@@ -30,9 +30,13 @@ print("***************************************************************")
 np.random.seed(int(time.time()))
 
 sample_rate = 16000
-frame_length = 255
-frame_step = 124
-log_offset = 1e-9
+frame_length = 511
+frame_step = 122
+log_offset = 1e-12
+
+W = 127
+H = 256
+C = 1
 
 def leaky_relu(x, alpha=0.01):
     return tf.maximum(x, alpha*x)
@@ -83,7 +87,7 @@ class SeparateAnchorModel(object):
         self.triplet_optimizer = None
         self.TripletLossMaker()
 
-        self.EER = 0.5
+        self.EER = 1
 
         self.saver = tf.train.Saver()
 
@@ -116,7 +120,7 @@ class SeparateAnchorModel(object):
         with tf.variable_scope('linear_projection', reuse=reuse):
             lp = tf.layers.dense(input, 128)
             return lp / tf.sqrt(tf.reduce_sum(tf.square(input), axis=1, keep_dims=True))
-
+    '''
     def Conv2dModel(self, input, reuse=False):
         with tf.variable_scope('conv2d_model', reuse=reuse):
             input_layer = tf.reshape(input, shape=(-1, W, H, C))
@@ -136,6 +140,37 @@ class SeparateAnchorModel(object):
             # bs 1 1 512
             feature_vector = tf.layers.batch_normalization(tf.layers.flatten(conv7), training=self.train)
             return feature_vector
+    '''
+    def Conv2dModel(self, input, reuse=False):
+        with tf.variable_scope('conv2d_model', reuse=reuse):
+            input_layer = tf.reshape(input, shape=(-1, W, H, C))
+            conv1 = tf.layers.conv2d(input_layer, 16, 5, strides=1, padding='same')
+            pool1 = self.pool(conv1, pool_size=2, strides=2, padding='same')
+            relu1 = tf.nn.relu(pool1)  # 64 128 16
+            conv2 = tf.layers.conv2d(relu1, 32, 5, strides=1, padding='same')
+            pool2 = self.pool(conv2, pool_size=2, strides=2, padding='same')
+            relu2 = tf.nn.relu(pool2)  # 32 64 32
+            conv3 = tf.layers.conv2d(relu2, 64, 3, strides=1, padding='same')
+            pool3 = self.pool(conv3, pool_size=2, strides=2, padding='same')
+            relu3 = tf.nn.relu(pool3)  # 16 32 64
+            conv4 = tf.layers.conv2d(relu3, 128, 3, strides=1, padding='same')
+            pool4 = self.pool(conv4, pool_size=2, strides=2, padding='same')
+            relu4 = tf.nn.relu(pool4)  # 8 16 128
+            conv5 = tf.layers.conv2d(relu4, 256, 3, strides=1, padding='same')
+            pool5 = self.pool(conv5, pool_size=2, strides=2, padding='same')
+            relu5 = tf.nn.relu(pool5)  # 4 8 256
+            conv6 = tf.layers.conv2d(relu5, 512, 3, strides=1, padding='same')
+            pool6 = self.pool(conv6, pool_size=2, strides=2, padding='same')
+            relu6 = tf.nn.relu(pool6)  # 2 4 512
+            conv7 = tf.layers.conv2d(relu6, 1024, 3, strides=1, padding='same')
+            pool7 = self.pool(conv7, pool_size=2, strides=2, padding='same')
+            relu7 = tf.nn.relu(pool7)  # 1 2 1024
+            conv8 = tf.layers.conv2d(relu7, 1024, 3, strides=1, padding='same')
+            pool8 = self.pool(conv8, pool_size=[1, 2], strides=[1, 2], padding='same')
+            relu8 = tf.nn.relu(pool8)  # 1 1 1024
+            output_layer = tf.layers.batch_normalization(tf.reshape(relu8, (-1, 1024)), training=self.train)
+            return output_layer
+
     #
     def Model_Init(self):
         config = tf.ConfigProto()
@@ -240,7 +275,7 @@ class SeparateAnchorModel(object):
         while divide <= 32 and compute_count<10:
             fault_accept = np.sum(l2same > threshold) / sl
             fault_reject = np.sum(l2diff <= threshold) / dl
-            cur_eer = (fault_accept + fault_reject) / 2
+            cur_eer = np.abs(fault_accept - fault_reject)
             if cur_eer < last_eer:
                 last_eer = cur_eer
                 best_threshold = threshold
@@ -258,7 +293,7 @@ class SeparateAnchorModel(object):
         eer_t = best_threshold
         eer_fr = np.sum(l2same > eer_t) / sl
         eer_fa = np.sum(l2diff <= eer_t) / dl
-        return eer_t, (eer_fa + eer_fr) / 2
+        return eer_t, (eer_fa + eer_fr)/2 
 
     # divide scores into same pair and diff pair
     def ScoreDivide(self, score, label):
@@ -317,7 +352,7 @@ class SeparateAnchorModel(object):
         print("current equal error rate is", eer, ' the pretaining threshold is', threshold)
         right_same = np.sum(dist_same <= threshold)
         right_diff = np.sum(dist_diff > threshold)
-        print("right accept:{} in {}".format(right_same, len(dist_same)), " ; ", "right reject:{} in {}".format(right_diff, len(dist_diff)))
+        print("right accept:{} in {}, percent:{}".format(right_same, len(dist_same), right_same/len(dist_same)), " ; ", "right reject:{} in {}, percent:{}".format(right_diff, len(dist_diff), right_diff/len(dist_diff)))
         if save_model:
             if eer < self.EER:
                 self.EER = eer
@@ -330,5 +365,9 @@ class SeparateAnchorModel(object):
             self.Model_Load()
         testscore = self.FeatureVectorsGeter(testdata, testlabel)
         dist_same, dist_diff = self.ScoreDivide(testscore, testlabel)
-        eer, threshold = self.EER_Compute_2(dist_same, dist_diff)
-        print("the EER is {} and the corresponding threshold is {}".format(eer, threshold))
+        threshold, eer = self.EER_Compute_2(dist_same, dist_diff)
+        print("current equal error rate is", eer, ' the pretaining threshold is', threshold)
+        right_same = np.sum(dist_same <= threshold)
+        right_diff = np.sum(dist_diff > threshold)
+        print("right accept:{} in {}, percent:{}".format(right_same, len(dist_same), right_same/len(dist_same)), " ; ", "right reject:{} in {}, percent:{}".format(right_diff, len(dist_diff), right_diff/len(dist_diff)))
+
