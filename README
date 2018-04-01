@@ -1,3 +1,5 @@
 It is the code to realize a deep-speaker likedd speaker verification system.
 It's reference paper is https://arxiv.org/abs/1705.02304
 
+It is a simple version of deep speaker, the nerual work and hyperparameters could be adjusted to get a better result.
+This model uses the public data bast Timit, more database, larger database is better for it.
